@@ -3,6 +3,7 @@ package ckks
 import (
 	"errors"
 	"math"
+	"math/big"
 	"unsafe"
 
 	"github.com/ldsec/lattigo/v2/ring"
@@ -61,6 +62,14 @@ type Evaluator interface {
 	InverseNew(ct0 *Ciphertext, steps uint64, evakey *EvaluationKey) (res *Ciphertext)
 	EvaluatePoly(ct *Ciphertext, coeffs *Poly, evakey *EvaluationKey) (res *Ciphertext, err error)
 	EvaluateCheby(ct *Ciphertext, cheby *ChebyshevInterpolation, evakey *EvaluationKey) (res *Ciphertext, err error)
+}
+
+type ExposedEvaluator interface {
+	Evaluator
+	SubPlain(el0, el1, elOut *Element)
+	ModInverse(el, elOut *Element) error
+	MultElement(el0, el1, elOut *Element)
+	MFormElement(el, elOut *Element)
 }
 
 // evaluator is a struct that holds the necessary elements to execute the homomorphic operations between Ciphertexts and/or Plaintexts.
@@ -122,6 +131,15 @@ func NewEvaluator(params *Parameters) Evaluator {
 	}
 }
 
+func CastExposed(eval Evaluator) ExposedEvaluator {
+	exposed, ok := eval.(*evaluator)
+	if ok {
+		return exposed
+	} else {
+		return nil
+	}
+}
+
 func (eval *evaluator) getElemAndCheckBinary(op0, op1, opOut Operand, opOutMinDegree uint64) (el0, el1, elOut *Element) {
 	if op0 == nil || op1 == nil || opOut == nil {
 		panic("operands cannot be nil")
@@ -171,6 +189,84 @@ func (eval *evaluator) AddNoModNew(op0, op1 Operand) (ctOut *Ciphertext) {
 	ctOut = eval.newCiphertextBinary(op0, op1)
 	eval.AddNoMod(op0, op1, ctOut)
 	return
+}
+
+func modInverse(a, q uint64) (r uint64) {
+	a_big, q_big, r_big := big.NewInt(int64(a)), big.NewInt(int64(q)), big.NewInt(0)
+	r_big.ModInverse(a_big, q_big)
+	return r_big.Uint64()
+}
+
+func (eval *evaluator) ModInverse(el, elOut *Element) error {
+	lvl := el.Level()
+
+	eval.ringQ.CopyLvl(lvl, el.value[0], elOut.value[0])
+	if !el.isNTT {
+		eval.ringQ.NTTLvl(lvl, elOut.value[0], elOut.value[0])
+		elOut.isNTT = true
+	}
+
+	modulus := eval.ringQ.Modulus
+	for i := uint64(0); i <= lvl; i++ {
+		q_i := modulus[i]
+		row := elOut.value[0].Coeffs[i]
+		for j := range row {
+			row[j] = modInverse(row[j], q_i)
+			if row[j] == 0 {
+				return errors.New("Invertible")
+			}
+		}
+	}
+	return nil
+}
+
+func (eval *evaluator) MultElement(el0, el1, elOut *Element) {
+
+	level := utils.MinUint64(utils.MinUint64(el0.Level(), el1.Level()), elOut.Level())
+
+	if el0.Degree() > 1 || el1.Degree() > 1 {
+		panic("cannot MulRelin: input elements must be of degree 0 or 1")
+	}
+
+	if !el0.IsNTT() {
+		panic("cannot MulRelin: op0 must be in NTT")
+	}
+
+	if !el1.IsNTT() {
+		panic("cannot MulRelin: op1 must be in NTT")
+	}
+
+	elOut.SetScale(el0.Scale() * el1.Scale())
+
+	ringQ := eval.ringQ
+
+	c00 := eval.poolQMul[0]
+
+	ringQ.MFormLvl(level, el0.value[0], c00)
+	ringQ.MulCoeffsMontgomeryLvl(level, c00, el1.value[0], elOut.value[0])
+
+}
+
+func (eval *evaluator) MFormElement(el, elOut *Element) {
+	lvl := utils.MinUint64(el.Level(), elOut.Level())
+
+	eval.ringQ.MFormLvl(lvl, el.value[0], elOut.value[0])
+}
+
+// Sub subtracts op1 from op0 and returns the result in out
+// Different from evaluator.Sub, this function can accept Plaintext as input / output
+func (eval *evaluator) SubPlain(el0, el1, elOut *Element) {
+
+	eval.evaluateInPlace(el0, el1, elOut, eval.ringQ.SubLvl)
+
+	level := utils.MinUint64(utils.MinUint64(el0.Level(), el1.Level()), elOut.Level())
+
+	if el0.Degree() < el1.Degree() {
+		for i := el0.Degree() + 1; i < el1.Degree()+1; i++ {
+			eval.ringQ.NegLvl(level, elOut.Value()[i], elOut.Value()[i])
+		}
+	}
+
 }
 
 // Sub subtracts op1 from op0 and returns the result in ctOut.
