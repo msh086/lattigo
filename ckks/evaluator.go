@@ -131,7 +131,7 @@ func NewEvaluator(params *Parameters) Evaluator {
 	}
 }
 
-func CastExposed(eval Evaluator) ExposedEvaluator {
+func CastExposedEvaluator(eval Evaluator) ExposedEvaluator {
 	exposed, ok := eval.(*evaluator)
 	if ok {
 		return exposed

@@ -49,6 +49,11 @@ type Encryptor interface {
 	EncryptFromCRP(plaintext *Plaintext, ciphertetx *Ciphertext, crp *ring.Poly)
 }
 
+type ExposedEncryptor interface {
+	Encryptor
+	AddGaussianNoise(el *Element)
+}
+
 // encryptor is a struct used to encrypt Plaintexts. It stores the public-key and/or secret-key.
 type encryptor struct {
 	params *Parameters
@@ -74,6 +79,28 @@ type pkEncryptor struct {
 type skEncryptor struct {
 	encryptor
 	sk *SecretKey
+}
+
+func CastExposedEncryptor(enc Encryptor) ExposedEncryptor {
+	valsk, ok := (enc).(*skEncryptor)
+	if ok {
+		return ExposedEncryptor(valsk)
+	}
+	valpk, ok := (enc).(*pkEncryptor)
+	if ok {
+		return ExposedEncryptor(valpk)
+	}
+	return nil
+}
+
+func (enc *encryptor) AddGaussianNoise(el *Element) {
+	lvl := el.Level()
+	pool0 := enc.poolQ[0]
+	enc.gaussianSamplerQ.ReadLvl(lvl, pool0)
+	if el.isNTT {
+		enc.ringQ.NTTLvl(lvl, pool0, pool0)
+	}
+	enc.ringQ.AddLvl(lvl, pool0, el.value[0], el.value[0])
 }
 
 // NewEncryptorFromPk creates a new Encryptor with the provided public-key.
