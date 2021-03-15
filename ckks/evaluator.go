@@ -213,7 +213,7 @@ func (eval *evaluator) ModInverse(el, elOut *Element) error {
 		for j := range row {
 			row[j] = modInverse(row[j], q_i)
 			if row[j] == 0 {
-				return errors.New("Invertible")
+				return errors.New("not invertible")
 			}
 		}
 	}
